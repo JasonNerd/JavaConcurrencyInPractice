@@ -139,3 +139,169 @@ public class TaskRunnable implements Runnable (BlockingQueue<Task> queue;
 public void run() [
 try iprocessTask(c:eue,take());] catch (InterruptedException e) // 恢复被中断的状态Thread,currentThread().interrupt ();
 还可以采用一些更复杂的中断处理方法，但上述两种方法已经可以应付大多数情况了。然而在出现InterruptedException 时不应该做的事情是，捕获它但不做出任何响应。这将使调用栈上更高层的代码无法对中断采取处理措施，因为线被中断的证据已经丢失。只有在一种特殊的情况中才能屏蔽中断，即对 Thread 进行扩展，并且能控制调用栈上所有更高层的代码。第7章将进一步介绍取消和中断等操作。
+5.5 同步工具类
+在容器类中，阻塞队列是一种独特的类 : 它们不仅能作为保存对象的容器，还能协调生产者和消费者等线程之间的控制流，因为 take 和 put 等方法将阻寒，直到队列达到期望的状态(队列既非空，也非满)。
+同步工具类可以是任何一个对象，只要它根据其自身的状态来协调线程的控制流。阻塞队列可以作为同步工具类，其他类型的同步工具类还包括信号量 (Semaphore)、栅栏(Barrier)以及闭锁 (Latch)。在平台类库中还包含其他一些同步工具类的类，如果这些类还无法满足需要，那么可以按照第 14 章中给出的机制来创建自己的同步工具类。
+所有的同步工具类都包含一些特定的结构化属性:它们封装了一些状态，这些状态将决定执行同步工具类的线程是继续执行还是等待，此外还提供了一些方法对状态进行操作，以及另一些方法用于高效地等待同步工具类进入到预期状态。
+5.5.1 闭锁
+闭锁是一种同步工具类，可以延迟线程的进度直到其到达终止状态[CPJ 3.4.2]。闭锁的作用相当于一扇门: 在闭锁到达结束状态之前，这扇门一直是关闭的，并且没有任何线程能通过，当到达结束状态时，这扇门会打开并允许所有的线程通过。当闭锁到达结束状态后，将不会再改变状态，因此这扇门将永远保持打开状态。闭锁可以用来确保某些活动直到其他活动都完成后才继续执行，例如:
+·确保某个计算在其需要的所有资源都被初始化之后才继续执行。二元闭锁(包括两个状态)可以用来表示“资源R 已经被初始化”，而所有需要 R的操作都必须先在这个闭锁上等待。
+确保某个服务在其依赖的所有其他服务都已经启动之后才启动。每个服务都有一个相关的二元闭锁。当启动服务 S 时，将首先在 S 依赖的其他服务的闭锁上等待，在所有依赖的服务都启动后会释放闭锁 S，这样其他依赖 S 的服务才能继续执行。等待直到某个操作的所有参与者(例如，在多玩家游戏中的所有玩家)都就绪再继续执行。在这种情况中，当所有玩家都准备就绪时，闭锁将到达结束状态。CountDownLatch 是一种灵活的闭锁实现，可以在上述各种情况中使用，它可以使一个或多个线程等待一组事件发生。闭锁状态包括一个计数器，该计数器被初始化为一个正数，表示需要等待的事件数量。countDown 方法递减计数器，表示有一个事件已经发生了，而 await 方法等待计数器达到零，这表示所有需要等待的事件都已经发生。如果计数器的值非零，那么await 会一直阻塞直到计数器为零，或者等待中的线程中断，或者等待超时。
+在程序清单 5-11 的TestHarness 中给出了闭锁的两种常见用法。TestHarness 创建一定数量的线程，利用它们并发地执行指定的任务。它使用两个闭锁，分别表示“起始门(StartingGate)”和“结束门(Ending Gate)”。起始门计数器的初始值为 1，而结束门计数器的初始值为工作线程的数量。每个工作线程首先要做的值就是在启动门上等待，从而确保所有线程都就绪后才开始执行。而每个线程要做的最后一件事情是将调用结束门的 countDown 方法减1，这能使主线程高效地等待直到所有工作线程都执行完成，因此可以统计所消耗的时间。
+程序清单 5-11 在计时测试中使用 CountDownLatch 来启动和停止线程
+public class TestHarness [
+long timeTasks(int nThreads,publicfinalRunnable task
+throws InterruptedException ifina1CountDownLatch startGate = new CountDownLatch(1);finalCountDownLatch endGate = new CountDownLatch(nThreads);
+for (int i = 0; i < nThreads; i++) Thread t = new Thread() /public void run() try 1startGate.await();tryitask.run();finallyendGate.countDown() ;
+) catch (InterruptedException ignored) [
+t.start() ;
+long start = System.nanoTime();startGate.countDown:endGate.await();long end = System.nanoTime () ;return end-start;
+为什么要在 TestHarness 中使用闭锁，而不是在线程创建后就立即启动? 或许，我们希望测试 n个线程并发执行某个任务时需要的时间。如果在创建线程后立即启动它们，那么先启动的线程将“领先”后启动的线程，并且活跃线程数量会随着时间的推移而增加或减少，竞争程度也在不断发生变化。启动门将使得主线程能够问时释放所有工作线程，而结束门则使主线程能够等待最后一个线程执行完成，而不是顺序地等待每个线程执行完成
+5.5.2 FutureTask
+FutureTask 也可以用做闭锁。(FutureTask 实现了 Future 语义，表示一种抽象的可生成结果的计算[CPJ 4.3.3])。FutureTask 表示的计算是通过 Callable 来实现的，相当于一种可生成结果的 Runnable，并且可以处于以下3 种状态:等待运行 (Waiting to run)，正在运行(Running)和运行完成 (Completed)。“执行完成”表示计算的所有可能结束方式，包括正常结束、由于取消而结束和由于异常而结束等。当 FutureTask 进入完成状态后，它会永远停止在这个状态上。
+Future.get 的行为取决于任务的状态。如果任务已经完成，那么 get 会立即返回结果，否则get 将阻塞直到任务进入完成状态，然后返回结果或者抛出异常。FutureTask 将计算结果从执行计算的线程传递到获取这个结果的线程，而 FutureTask 的规范确保了这种传递过程能实现结果的安全发布。
+
+FutureTask 在 Executor 框架中表示异步任务，此外还可以用来表示一些时间较长的计算这些计算可以在使用计算结果之前启动。程序清单 5-12 中的 Preloader 就使用了 FutureTask 来执行一个高开销的计算，并且计算结果将在稍后使用。通过提前启动计算，可以减少在等待结果时需要的时间。
+程序清单 5-12 使用 FutureTask 来提前加载稍后需要的数据
+public class Preloader [
+private final FutureTask<ProductInfo> futurenewFutureTask<ProductInfo>(new Callable<ProductInfo>() public productInfo call() throws DataLoadException ireturn loadProductInfo();
+private final Thread thread = new Thread(future);
+public void start()  thread.start(); 
+public ProductInfo get()throws DataLoadException, InterruptedException (tryreturn future,get();
+catch (ExecutionException e)
+Throwable cause = e.getCause();if (causeinstanceof DataLoadException)throw (DataLoadException) cause;
+else
+throw launderThrowable(cause);
+Preloader 创建了一个 FutureTask，其中包含从数据库加载产品信息的任务，以及一个执行运算的线程。由于在构造函数或静态初始化方法中启动线程并不是一种好方法，因此提供了一个start 方法来启动线程。当程序随后需要 ProductInfo 时，可以调用get 方法，如果数据已经加
+载，那么将返回这些数据，否则将等待加载完成后再返回。Callable 表示的任务可以抛出受检查的或未受检查的异常，并且任何代码都可能抛出个Error。无论任务代码抛出什么异常，都会被封装到一个ExecutionException 中，并在Future.get 中被重新抛出。这将使调用 get 的代码变得复杂，因为它不仅需要处理可能出现的ExecutionException (以及未检查的 CancellationException)，而且还由于 ExecutionException 是作为一个 Throwable 类返回的，因此处理起来并不容易。
+在 Preloader 中，当 get 方法抛出 ExecutionException 时，可能是以下三种情况之一: Callable抛出的受检查异常，RuntimeException，以及 Error。我们必须对每种情况进行单独处理，但我们将使用程序清单 5-13 中的 launderThrowable 辅助方法来封装一些复杂的异常处理逻辑在调用 launderThrowable 之前，Preloader 会首先检查已知的受检查异常，并重新抛出它们剩下的是未检查异常，Preloader 将调用 launderThrowable 并抛出结果。如果 Throwable 传递给launderThrowable 的是一个 Error，那么launderThrowable 将直接再次抛出它;如果不是RuntimeException，:那么将抛出一个 IllegalStateException 表示这是一个逻辑错误。剩下的RuntimeException，launderThrowable 将把它们返回给调用者，而调用者通常会重新抛出它们。
+程序清单 5-13强制将未检查的 Throwable 转换为 RuntimeException
+ t如果Throwable是Error，那么抛出它;如果是RuntimeException，那么返回它，否则抛出IllegalStateException。*/
+public static RuntimeException launderThrowable(Throwable t)if (t instanceof RuntimeException)
+return (RuntimeException) t;else if (t instanceof Error)throw (Error) t;
+else
+throw new IllegalstateException("Not unchecked"， t);
+5.5.3信号量
+计数信号量( Counting Semaphore) 用来控制同时访问某个特定资源的操作数量，或者同时执行某个指定操作的数量[CPJ 3.4.1]。计数信号量还可以用来实现某种资源池，或者对容器施加边界。
+Semaphore 中管理着一组虚拟的许可(permit)，许可的初始数量可通过构造函数来指定在执行操作时可以首先获得许可(只要还有剩余的许可)，并在使用以后释放许可。如果没有许可，那么 acquire 将阻塞直到有许可(或者直到被中断或者操作超时)。release 方法将返回一个许可给信号量。@计算信号量的一种简化形式是二值信号量，即初始值为 1的 Semaphore。二值信号量可以用做互斥体 (mutex)，并具备不可重人的加锁语义: 谁拥有这个唯一的许可，谁就拥有了互斥锁。
+Semaphore 可以用于实现资源池，例如数据库连接池。我们可以构造一个固定长度的资源池，当池为空时，请求资源将会失败，但你真正希望看到的行为是阻塞而不是失败，并且当池非空时解除阻塞。如果将 Semaphore 的计数值初始化为池的大小，并在从池中获取一个资源之前首先调用 acquire 方法获取一个许可，在将资源返回给池之后调用 release 释放许可，那么acquire 将一直阻塞直到资源池不为空。在第 12 章的有界缓冲类中将使用这项技术。(在构造阳塞对象池时，一种更简单的方法是使用 BlockingQueue 来保存池的资源。)
+
+同样，你也可以使用 Semaphore 将任何一种容器变成有界阻塞容器，如程序清单 5-14中的 BoundedHashSet 所示。信号量的计数值会初始化为容器容量的最大值。add 操作在向底层容器中添加一个元素之前，首先要获取一个许可。如果 add 操作没有添加任何元素，那么会立刻
+
+在这种实现中不包含真正的许可对象，并且 Semaphore 也不会将许可与线程关联起来，因此在一个线程中获0得的许可可以在另一个线程中释放。可以将 acquire 操作视为是消费一个许可，而 release 操作是创建一个许可，Semaphore 并不受限于它在创建时的初始许可数量
+
+释放许可。同样，remove 操作释放一个许可，使更多的元素能够添加到容器中。底层的 Set 实现并不知道关于边界的任何信息，这是由 BoundedHashSet 来处理的。
+程序清单 5-14 使用 Semaphore 为容器设置边界
+public class BoundedHashset<T>
+private final SeteT> set;
+private final Semaphore sem;
+public BoundedHashset(int bound) {
+this,set = Collections.synchronizedSet(new HashSet<T>());sem = new Semaphore(bound);
+public boolean add(T.o) throws InterruptedException sem,acquire();boolean wasAdded = false;
+tryi
+wasAdded = set.add(o);return wasAdded;
+finallyif(!wasAdded)
+sem.release() :
+public boolean remove(object o)boolean wasRemoved = set.remove(o);if (wasRemoved)
+sem.release();return wasRemoved;
+5.5.4 栅栏
+我们已经看到通过闭锁来启动一组相关的操作，或者等待一组相关的操作结束。闭锁是次性对象，一旦进入终止状态，就不能被重置。
+栅栏(Barrier)类似于闭锁，它能阻塞一组线程直到某个事件发生[CPJ 4,4.3]。栅栏与闭锁的关键区别在于，所有线程必须同时到达栅栏位置，才能继续执行。闭锁用于等待事件，而栅栏用于等待其他线程。栅栏用于实现一些协议，例如几个家庭决定在某个地方集合 :“所有人6:00 在麦当劳碰头，到了以后要等其他人，之后再讨论下一步要做的事情。”
+CyclicBarrier 可以使一定数量的参与方反复地在栅栏位置汇集，它在并行选代算法中非常有用:这种算法通常将一个问题拆分成一系列相互独立的子问题。当线程到达栅栏位置时将调用 await 方法，这个方法将阻塞直到所有线程都到达栅栏位置。如果所有线程都到达了栅栏位置，那么栅栏将打开，此时所有线程都被释放，而栅栏将被重置以便下次使用。如果对 await的调用超时，或者 await 阻塞的线程被中断，那么栅栏就被认为是打破了，所有阻塞的 await 调用都将终止并抛出 BrokenBarrierException。如果成功地通过栅栏，那么await 将为每个线程返回一个唯一的到达索引号，我们可以利用这些索引来“选举”产生一个领导线程，并在下一次选代中由该领导线程执行一些特殊的工作。CyclicBarrier 还可以使你将一个栏操作传递给构造函数，这是一个 Runnable，当成功通过栅栏时会(在一个任务线程中)执行它，但在阳寒线程被释放之前是不能执行的。
+在模拟程序中通常需要使用栅栏，例如某个步骤中的计算可以并行执行，但必须等到该步骤中的所有计算都执行完毕才能进入下一个步骤。例如，在 body 粒子模拟系统中，每个步骤都根据其他粒子的位置和属性来计算各个粒子的新位置。通过在每两次更新之间等待栅栏，能够确保在第 k 步中的所有更新操作都已经计算完毕，才进入第 k+1步。
+在程序清单 5-15 的 CellularAutomata 中给出了如何通过栅栏来计算细胞的自动化模拟，例如Conway 的生命游戏(Gardner，1970)。在把模拟过程并行化时，为每个元素(在这个示例中相当于一个细胞》分配一个独立的线程是不现实的，因为这将产生过多的线程，而在协调这些线程上导致的开销将降低计算性能。合理的做法是，将问题分解成一定数量的子问题，为每个子问题分配一个线程来进行求解，之后再将所有的结果合并起来。CellularAutomata 将问题分解为 N 个子问题，其中 N 等于可用 CPU的数量，并将每个子问题分配给一个线程。
+在每个步骤中，工作线程都为各自子问题中的所有细胞计算新值。当所有工作线程都到达栅栏时，栅栏会把这些新值提交给数据模型。在栅栏的操作执行完以后，工作线程将开始下一步的计算，包括调用 isDone 方法来判断是否需要进行下一次迭代。
+程序清单 5-15 通过 CyclicBarrier 协调细胞自动衍生系统中的计算
+public class CellularAutomata [
+private final Board mainBoard;
+private final CyclicBarrier barrier;
+private final Worker[] workers;
+public CellularAutomata(Board board) this.mainBoard = board;int count =' Runtime.getRuntime().availableProcessors();this.barrier = new CyclicBarrier(count,
+new Runnable()public void run() (mainBoard.commitNewValues ():
+this.workers = new Worker[countj;for (int i =0; i < count; i++)
+workers[i] = new Worker(mainBoard.qetSubBoard(count，i));
+private class Worker implements Runnable (private final Board board;
+在这种不涉及 I/O 操作或共享数据访向的计算问题中，当线程数量为 N或N时将获得最优的吞吐量更多的线程并不会带来任何帮助，甚至在某种程度上会降低性能，因为多个线程将会在 CPU 和内存等资源上发生竞争。
+public Worker(Board board)  this.board = board;public void run() 
+while (!board.hasConverged()) for (int x = 0; x < board.getMaxx(); x++)for (int y = 0; y < board.getMaxY(); y++)board.setNewValue(x，y， computeValue(x， y));
+try
+barrier.await();
+catch (InterruptedException ex) freturn;catch (BrokenBarrierException ex)return;
+public void start()(
+for (int i = 0; i < workers.length; i++)new Thread(workers[il).start();mainBoard.waitForConvergence();
+另一种形式的栅栏是 Exchanger，它是一种两方 (Two-Party)栅栏，各方在栅位置上交换数据[CPJ3.4.3]。当两方执行不对称的操作时，Exchanger 会非常有用，例如当一个线程向缓冲区写人数据，而另一个线程从缓冲区中读取数据。这些线程可以使用 Exchanger 来汇合，并将满的缓冲区与空的缓冲区交换。当两个线程通过 Exchanger 交换对象时，这种交换就把这两个对象安全地发布给另一方。
+数据交换的时机取决于应用程序的响应需求。最简兰的方案是，当缓冲区被填满时由填充任务进行交换，当缓冲区为空时，由清空任务进行交换。这样会把需要交换的次数降至最低，但如果新数据的到达率不可预测，那么一些数据的处理过程就将延迟。另一个方法是，不仅当缓冲被填满时进行交换，并且当缓冲被填充到一定程度并保持一定时间后，也进行交换。
+5.6 构建高效且可伸缩的结果缓存
+几乎所有的服务器应用程序都会使用某种形式的缓存。重用之前的计算结果能降低延迟，
+提高吞吐量，但却需要消耗更多的内存。像许多“重复发明的轮子”一样，缓存看上去都非常简单。然而，简单的缓存可能会将性能瓶颈转变成可伸缩性瓶颈，即使缓存是用于提升单线程的性能。本节我们将开发一个高效且可伸缩的缓存，用于改进-个高计算开销的函数。我们首先从简单的 HashMap 开始，然后分析它的并发性缺陷，并讨论如何修复它们。
+在程序清单 5-16的Computable<A，V> 接口中声明了一个函数 Computable，其输入类型为A，输出类型为 V。在 ExpensiveFunction 中实现的 Computable，需要很长的时间来计算结果，我们将创建一个 Computable 包装器，帮助记住之前的计算结果，并将缓存过程封装起来。(这项技术被称为“记忆[Memoization]”。)
+程序清单 5-16 使用 HashMap 和同步机制来初始化缓存
+public interface Computable<A,V> !
+V compute(A arg) throws InterruptedException;
+public class ExpensiveFunctionimplements Computable<String， BigInteger>public BigInteger compute(String arg)// 在经过长时间的计算后return new BigInteger(arg);
+public class Memoizerl<A，V> implements ComputablecA，V> !@GuardedBy(rthis")private final Map<A，V> cache = new HashMap<A，V>();private final Computable<A, V> c;
+public Memoizerl(Computable<A，V> c) [this.c = c;
+public synchronized V compute(A arg) throws InterruptedException (V result = cache.get(arg);if (resul+ == null) [result = c.compute(arg);cache .put(arg, result);
+return result;
+在程序清单 5-16 中的 Memoizerl 给出了第一种尝试:使用 HashMap 来保存之前计算的结果。compute 方法将首先检查需要的结果是否已经在缓存中，如果存在则返回之前计算的值否则，将把计算结果缓存在 HashMap 中，然后再返回。
+HashMap 不是线程安全的，因此要确保两个线程不会同时访问 HashMap，Memoizerl 采用了一种保守的方法，即对整个 compute 方法进行同步。这种方法能确保线程安全性，但会带来一个明显的可伸缩性问题:每次只有一个线程能够执行 compute。如果另一个线正在计算结果，那么其他调用 compute 的线程可能被阻塞很长时间。如果有多个线程在排队等待还未计算出的结果，那么 compute 方法的计算时间可能比没有“记忆”操作的计算时间更长。在图 5-2中给出了当多个线程使用这种方法中的“记忆”操作时发生的情况，这显然不是我们希望通过缓存获得的性能提升结果
+![](./image/2023-09-26-20-54-15.png)
+程序清单5-17 中的 Memoizer2 用 ConcurrentHashMap 代替HashMap 来改进 Memoizerl 中糟糕的并发行为。由于 ConcurrentHashMap 是线程安全的，因此在访问底层 Map 时就不需要进行同步，因而避免了在对 Memoizer1 中的 compute 方法进行同步时带来的串行性。Memoizer2 比Memoizerl 有着更好的并发行为:多线程可以并发地使用它。但它在作为缓存时仍然存在一些不足一一当两个线程同时调用 compute 时存在一个漏洞，可能会导致计算得到相同的值。在使用 memoization 的情况下，这只会带来低效，因为缓存的作用是避免相同的数据被计算多次。但对于更通用的缓存机制来说，这种情况将更为糟糕。对于只提供单次初始化的对象缓存来说，这个漏洞就会带来安全风险。
+程序清单 5-17 用 ConcurrentHashMap 替换 HashMap
+public class Memoizer2<A，V> implements Computable<A，V>private final Map<A， V> cache = new ConcurrentHashMap<A V>();private final Computable<A，V> c;
+public Memoizer2(Computable<A，V> c)  this.c = c;
+public V compute(A arg) throws InterruptedException (V result = cache,get(arg);if (result == null) !result = ccompute(arg);cache.put(arg， result);
+return result ;
+Memoizer2 的问题在于，如果某个线程启动了一个开销很大的计算，而其他线程并不知道这个计算正在进行，那么很可能会重复这个计算，如图 5-3 所示。我们希望通过某种方法来表达“线程X正在计算 f(27)”这种情况，这样当另一个线查找 f(27)时，它能够知道最高效的方法是等待线程 X 计算结束，然后再去查询缓存“f(27)的结果是多少?”我们已经知道有一个类能基本实现这个功能: FutureTask。FutureTask 表示一个计算的过程这个过程可能已经计算完成，也可能正在进行。如果有结果可用，那么FutureTask.get 将立即返回结果，否则它会一直阻塞，直到结果计算出来再将其返回。
+![](./image/2023-09-26-20-59-26.png)
+程序清单5-18 中的 Memoizer3 将用于缓存值的 Map 重新定义为 ConcurrentHashMap<A.Future<V>>，替换原来的 ConcurrentHashMap<A，V>。Memoizer3 首先检查某个相应的计算是否已经开始(Memoizer2 与之相反，它首先判断某个计算是否已经完成)。如果还没有启动，那么就创建一个 FutureTask，并注册到 Map 中，然后启动计算: 如果已经启动，那么等待现有计算的结果。结果可能很快会得到，也可能还在运算过程中，但这对于 Future.get 的调用者来说是透明的。
+程序清单 5-18 基于 FutureTask 的 Memoizing 封装器
+public class Memoizer3<A，V> implements Computable<A，V>(private final Map<A, Future<V>> cache
+= new ConcurrentHashMap<A, Future<V>>();private final Computable<A, V> c;
+public Memoizer3(Computable<A，V> c)[ this.c = c;
+public V compute(final A arg) throws InterruptedException (Future<V> f = cache.get(arg);if (f == null) 
+Callable<V> eval = new Callable<V>(!public V call() throws InterruptedException ireturn c.compute(arg);
+FutureTask<V> ft = new FutureTask<V>(eval);f = ft;
+cache.put(arg, ft);ft.run(); // 在这里将调用 c.compute
+try(
+return f.get();
+ catch (ExecutionException e)
+throw launderThrowable(e.getCause()) ;
+Memoizer3 的实现几乎是完美的: 它表现出了非常好的并发性(基本上是源于ConcurrentHashMap 高效的并发性)，若结果已经计算出来，那么将立即返回。如果其他线程正在计算该结果，那么新到的线程将一直等待这个结果被计算出来。它只有一个缺陷，即仍然存在两个线程计算出相同值的漏洞。这个漏洞的发生概率要远小于 Memoizer2 中发生的概率，但由于 compute 方法中的if 代码块仍然是非原子(nonatomic)的“先检查再执行”操作，因此两个线程仍有可能在同一时间内调用 compute 来计算相同的值，即二者都没有在缓存中找到期望的值，因此都开始计算。这个错误的执行时序如图 5-4 所示。
+![](./image/2023-09-26-21-01-51.png)
+Memoizer3 中存在这个问题的原因是，复合操作(“若没有则添加”是在底层的 Map 对象上执行的，而这个对象无法通过加锁来确保原子性。程序清单 5-19 中的 Memoizer 使用了ConcurrentMap 中的原子方法 putIfAbsent，避免了 Memoizer3 的漏洞。
+Memoizer3 中存在这个问题的原因是，复合操作(“若没有则添加”是在底层的 Map 对象上执行的，而这个对象无法通过加锁来确保原子性。程序清单5-19 中的 Memoizer 使用了ConcurrentMap中的原子方法 putIfAbsent，避免了Memoizer3 的漏洞
+程序清单5-19 Memoizer的最终实现
+public class Memoizer<AV> implements Computable<A，V>private final ConcurrentMap<A, Future<V>> cache= new ConcurrentHashMap<A, Future<V>>();private final Computable<A， V> c;
+public Memoizer(Computable<A，V> c)  this.c = c;
+public V compute(final A arg) throws InterruptedException(while (true)Future<V> f = cache.get(arg);jf (f == null) /
+Callable<V> eval = new Callable<V>()public V call() throws InterruptedException return c.compute(arg);
+FutureTask<V> ft = new FutureTask<V>(eval);f = cache.putIfAbsent(arg, ft);if (f == null) /  f = ft; ft.run(); 
+try
+return f.get(); catch (CancellationException e) cache .remove(arg， f); catch (ExecutionException e)
+throw launderThrowable(e.getCause());
+当缓存的是 Future 而不是值时，将导致缓存污染(Cache Pollution)问题:如果某个计算被取消或者失败，那么在计算这个结果时将指明计算过程被取消或者失败。为了避免这种情况，如果 Memoizer 发现计算被取消，那么将把 Future 从缓存中移除。如果检测到RuntimeException,那么也会移除 Future，这样将来的计算才可能成功。Memoizer 同样没有解决缓存逾期的问题，但它可以通过使用 FutureTask 的子类来解决，在子类中为每个结果指定一个逾期时间，并定期扫描缓存中逾期的元素。(同样，它也没有解决缓存清理的问题，即移除旧的计算结果以便为新的计算结果腾出空间，从而使缓存不会消耗过多的内存。)
+在完成并发缓存的实现后，就可以为第 2章中因式分解 servlet 添加结果缓存。程序清单5-20 中的 Factorizer 使用 Memoizer 来缓存之前的计算结果，这种方式不仅高效，而且可扩展性也更高。
+程序清单 5-20 在因式分解 servlet 中使用 Memoizer 来缓存结果
+@Threadsafe
+public class Factorizer implements Servlet !
+private final Computable<BigInteger， BigInteger[]> cnew Computable<BigInteger， BigInteger[]>()public BigInteger[] compute(BigInteger arg) return factor(arg);
+private final Computable<BigInteger， BigInteger[l> cache= new Memoizer<BigInteger， BigInteger[]>(c);
+public void service(ServletRequest req,ServletResponse resp) 
+tryBigInteger i = extractFromRequest(req);encodeIntoResponse(resp， cache.compnte(i)) ;catch (InterruptedException e)
+encodeError(resp，“factorization in errupted");
+第一部分小结
+到目前为止，我们已经介绍了许多基础知识。下面这个“并发技巧清单”列举了在第一部分中介绍的主要概念和规则。
+
+可变状态是至关重要的(Itsthe mutablestate,stupid)旦所有的并发问题都可以归结为如何协调对并发状态的访问。可变状态越少就越容易确保线程安全性。
+尽量将域声明为 final 类型，除非需要它们是可变的。
+不可变对象一定是线程安全的。
+不可变对象能极大地降低并发编程的复杂性。它们更为简单而且安全，可以任意共享而无须使用加锁或保护性复制等机制。封装有助于管理复杂性。
+在编写线程安全的程序时，虽然可以将所有数据都保存在全局变量中，但为什么要这样做?将数据封装在对象中，更易于维持不变性条件，将同步机制封装在对象中，更易于遵循同步策略。
+用锁来保护每个可变变量。.
+当保护同一个不变性条件中的所有变量时，要使用同一个锁。
+在执行复合操作期间，要持有锁。
+如果从多个线程中访问同一个可变变量时没有同步机制，那么程序会出现问题。
+不要故作聪明地推断出不需要使用同步。
+在设计过程中考虑线程安全，或者在文档中明确地指出它不是线程安全的。
+将同步策略文档化。
